@@ -1,0 +1,96 @@
+
+rm(list = ls())
+gc()
+options(stringsAsFactors = FALSE)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+
+## Read data from the established datasets
+if (!file("sce_rawdata.Rdata")) {
+  ## Load data from the featurecounts and annotation file
+  DataCounts <- read.table("m4T1.raw.featurecounts.txt", header = TRUE)
+  DataAnnota <- read.csv("m4T1.cell.annotation.csv")
+  CountsInfo <- DataCounts[ , 1:4]
+  counts <- DataCounts[ , 5:ncol(DataCounts)]
+  
+  ## Create a Single Cell Sequencing object
+  sce <- SingleCellExperiment(assays = list(counts = as.matrix(counts)), colData = DataAnnota)
+  save(sce, file = "sce_rawdata.Rdata")
+} else {
+   load("sce_rawdata.Rdata")
+}
+
+## Remove genes that are not expressed in any cell
+KeepFeature <- rowSums(counts(sce)) > 0
+sce <- sce[KeepFeature, ]
+## Remove cells that express no mcherry & luciGFP
+FeatureGenes <- counts(sce)["mCherry", ] == 0 & counts(sce)["luciGFP", ] == 0
+# Remove cells whose mCherry & luciGFP counts = 0
+colData(sce)$use <- !FeatureGenes
+FeatureGeneName <- rownames(sce) %in% c("mCherry", "luciGFP")
+# Remove mCherry & luciGFP genes
+rowData(sce)$use <- !FeatureGeneName
+sce <- sce[rowData(sce)$use, colData(sce)$use]
+
+## Control feature genes: ERCC & mitochondrial genes
+isSpike(sce, "ERCC") <- grepl("^ERCC", rownames(sce))
+isSpike(sce, "mt") <- rownames(sce) %in% c("mt-Atp6", "mt-Atp8", "mt-Co1", "mt-Co2", "mt-Co3",
+    "mt-Cytb", "mt-Nd1", "mt-Nd2", "mt-Nd3", "mt-Nd4", "mt-Nd4I", "mt-Nd5", "mt-Nd6", "mt-Rnr1",
+    "mt-Rnr2", "mt-Ta", "mt-Tc", "mt-Te", "mt-Tf", "mt-Th", "mt-Ti", "mt-Tk", "mt-TI1", "mt-TI2",
+    "mt-Tm", "mt-Tn", "mt-Tp", "mt-Tq", "mt-Tr", "mt-Ts1", "mt-Ts2", "mt-Tt", "mt-Tv", "mt-Tw", "mt-Ty")
+
+## Calculate the quality metrics
+sce <- calculateQCMetrics(sce, feature_controls = list(ERCC = isSpike(sce, "ERCC"), MT = isSpike(sce, "mt")))
+## Cell QC
+hist(log10(sce$total_counts), breaks = 100)
+abline(v = c(5.5, 7), col = "red")
+hist(sce$total_features_by_counts, breaks = 100)
+abline(v = c(6000, 13000), col="red")
+plotColData(sce, x = "total_features_by_counts", y = "pct_counts_ERCC")
+plotColData(sce, x = "total_features_by_counts", y = "pct_counts_MT")
+
+## Cell filtering
+filter_by_total_counts <- (sce$log10_total_counts > 5.5 & sce$log10_total_counts < 7)
+filter_by_expr_features <- (sce$total_features_by_counts > 6000 & sce$total_features_by_counts < 13000)
+filter_by_ERCC <- (sce$pct_counts_ERCC < 5)
+filter_by_MT <- sce$pct_counts_MT < 10
+# filter_by_map
+pct.map <- read.table("lane1-13.Alinge.static.txt", sep="\t", header=T)
+colnames(pct.map)[1] <- c("CellName")
+which(FeatureGenes)
+pct.map <- subset(pct.map, CellName != "4T1-1-35" & CellName != "4T1-3-73")
+filter_by_map <- pct.map[ , 4] > 40
+
+## Manual filtering
+sce$use<-(filter_by_total_counts
+          & filter_by_expr_features
+          & filter_by_ERCC
+          & filter_by_MT 
+          & filter_by_map)
+colnames(sce)[!sce$use]
+filter_genes <- apply(counts(sce[ , colData(sce)$use]), 1,
+    function(x) length(x[x > 1]) >= 2
+)
+rowData(sce)$use <- filter_genes
+
+## Gene analysis
+plotHighestExprs(sce, exprs_values = "counts")
+# Gene filtering
+keep_feature <- nexprs(sce[ , colData(sce)$use], byrow = TRUE, detection_limit = 1) >= 2
+rowData(sce)$use <- keep_feature
+
+## Save the data
+sce_qc <- sce[rowData(sce)$use, colData(sce)$use]
+## Create an additional slot with log-transformed counts and remove PCA results
+assay(sce_qc, "logcounts_raw") <- log2(counts(sce_qc) + 1)
+reducedDim(sce) <- NULL
+# Output the data
+save(sce_qc, file = "sce_qcdata.Rdata")
+
+#============================#
+#       Musician: Resonance  #
+#           Date: 2019/07/19 #
+# Revised author: Resonance  #
+#           Time: 2019/11/25 #
+#============================#
